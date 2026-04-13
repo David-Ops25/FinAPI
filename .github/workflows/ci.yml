@@ -7,6 +7,20 @@ on:
 jobs:
   security-build-test:
     runs-on: ubuntu-latest
+    env:
+      NODE_ENV: test
+      PORT: 8080
+      JWT_ACCESS_SECRET: ci-access-secret-that-is-long-enough
+      JWT_REFRESH_SECRET: ci-refresh-secret-that-is-long-enough
+      ACCESS_TOKEN_TTL: 10m
+      REFRESH_TOKEN_TTL: 7d
+      MAX_LOGIN_ATTEMPTS: 5
+      LOCKOUT_MINUTES: 15
+      TRANSFER_DAILY_LIMIT: 50000
+      TRANSFER_SINGLE_LIMIT: 10000
+      ALLOWED_ORIGINS: https://localhost:3000
+      API_KEY_HEADER: x-api-key
+      EXTERNAL_API_KEY: ci-api-key-1234567890
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -23,3 +37,5 @@ jobs:
         run: npm run security:sast
       - name: Dependency audit (fail high+)
         run: npm run security:audit
+      - name: Build
+        run: npm run build
