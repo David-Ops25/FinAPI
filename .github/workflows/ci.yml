@@ -27,8 +27,8 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - name: Install
-        run: npm ci
+      - name: Install (cross-platform lockfile tolerant)
+        run: npm install --no-audit --no-fund
       - name: Lint
         run: npm run lint
       - name: Unit tests
