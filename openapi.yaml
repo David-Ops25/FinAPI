@@ -1,0 +1,94 @@
+openapi: 3.0.3
+info:
+  title: FinTrust Banking API
+  version: 1.0.0
+servers:
+  - url: https://api.fintrust.local
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    apiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-api-key
+paths:
+  /auth/register:
+    post:
+      summary: Register user
+      responses:
+        "201":
+          description: Created
+  /auth/login:
+    post:
+      summary: Login and receive token pair
+      responses:
+        "200":
+          description: Token pair issued
+  /auth/refresh:
+    post:
+      summary: Rotate refresh token and issue new pair
+      responses:
+        "200":
+          description: Tokens rotated
+  /auth/logout:
+    post:
+      summary: Revoke refresh token
+      responses:
+        "204":
+          description: Logged out
+  /accounts:
+    get:
+      summary: List accounts
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Accounts list
+  /accounts/{id}:
+    get:
+      summary: Get account by ID
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Account
+  /transactions:
+    get:
+      summary: List transactions with filters
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Transactions list
+  /transactions/{id}:
+    get:
+      summary: Get transaction by ID
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Transaction
+  /transfers:
+    post:
+      summary: Perform transfer with idempotency
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      responses:
+        "201":
+          description: Transfer executed
