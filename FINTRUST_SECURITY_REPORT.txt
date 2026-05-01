@@ -1,0 +1,258 @@
+================================================================================
+  FINTRUST SECURE PLATFORM — SECURITY & ARCHITECTURE REPORT
+  Document classification: Public technical disclosure (no secrets)
+  Version: 1.0.0
+  Date: 2026-05-01
+================================================================================
+
+1. EXECUTIVE SUMMARY
+--------------------------------------------------------------------------------
+FinTrust Secure Platform is a reference Open Banking–style API implemented in
+Node.js 22 + TypeScript 5, intended for public repository publication, security
+review, and DevSecOps demonstration. The system applies defense-in-depth at the
+HTTP edge (Helmet, strict CORS, rate limits), application layer (Zod validation,
+RBAC, API key for sensitive mutations), authentication (Argon2id, JWT access +
+rotating refresh with server-side revocation and HttpOnly cookie binding), and
+observability (structured Pino logging with redaction, append-only style audit
+events in memory).
+
+This artifact is not a certified banking system; it is an auditable baseline
+showing how controls map to common STRIDE threats and how CI gates enforce supply
+chain hygiene.
+
+
+2. SYSTEM ARCHITECTURE
+--------------------------------------------------------------------------------
+2.1 Runtime components
+  - API server: Express 5 application (`src/app.ts`) exposing REST endpoints for
+    registration, authentication, accounts, transactions, transfers, and admin
+    audit retrieval.
+  - AuthN/AuthZ: Stateless JWT access tokens (short TTL) plus refresh tokens
+    tracked in an in-memory revocation table keyed by JWT `jti`. Refresh tokens
+    are mirrored to clients primarily via HttpOnly cookies (Path=/auth) to
+    simulate browser-bound storage; server-to-server clients may still pass a
+    refresh token in JSON for interoperability (not preferred for browsers).
+  - Persistence: PostgreSQL is provided as an optional `docker-compose` profile
+    (`postgres` service) for operational realism; the reference application logic
+    uses a secure in-memory store (`src/services/store.ts`) so the repository runs
+    without database provisioning while remaining explicit about production gaps.
+
+2.2 Trust boundaries
+  - Internet / untrusted clients → TLS termination (assumed at ingress reverse
+    proxy in production), WAF (recommended, not shipped), this Node process.
+  - Authenticated user plane → JWT + RBAC + resource ownership checks.
+  - Privileged admin plane → `admin` role only (`/admin/*`).
+  - Transfer initiation plane → additional static API key header required
+    (`requireApiKey`) to simulate PSD2-style confidential client / TPP channel
+    separation from end-user bearer tokens.
+
+2.3 Data flows (high level)
+  - Register → Argon2id hash persisted; synthetic account provisioned with masked
+    account display only.
+  - Login → verify hash, enforce lockout policy, issue access JWT + refresh JWT,
+    set HttpOnly refresh cookie, emit audit event (no password/token fields).
+  - Refresh → verify refresh JWT + server-side record, revoke old `jti`, mint new
+    pair, rotate cookie.
+  - Transfer → validate payload (Zod), API key, JWT role, ownership (for `user`),
+    balance, daily aggregate limit, idempotency replay map, fraud heuristics,
+    mutate balances atomically in-process, record transaction + audit.
+
+
+3. AUTHENTICATION & AUTHORIZATION DESIGN
+--------------------------------------------------------------------------------
+3.1 Passwords
+  - Argon2id with conservative parameters (`src/services/auth.ts`).
+  - Complexity policy enforced on registration (`src/utils/security.ts`).
+
+3.2 JWT access tokens
+  - Signed with `JWT_ACCESS_SECRET`; `typ: "access"` claim enforced in middleware.
+  - TTL configurable via `ACCESS_TOKEN_TTL` (default 10 minutes, within the 5–15
+    minute operational band recommended in requirements).
+
+3.3 Refresh tokens and rotation
+  - Signed with `JWT_REFRESH_SECRET` (distinct from access secret).
+  - Each refresh JWT carries a unique `jti` stored server-side with `expiresAt`
+    aligned to `REFRESH_TOKEN_TTL` parsed to milliseconds (`src/utils/time.ts`).
+  - Rotation: `/auth/refresh` revokes the presented `jti` before issuing a new
+    pair, mitigating refresh token replay and theft window extension.
+
+3.4 Account lockout and brute-force protection
+  - After `MAX_LOGIN_ATTEMPTS` failed password verifications, the account enters a
+    timed lockout (`LOCKOUT_MINUTES`).
+  - Dedicated stricter rate limit on `/auth/login` keyed by client IP + email
+    (`src/routes/auth.ts`) layered under a global API rate limit (`src/app.ts`).
+
+3.5 RBAC model
+  - Roles: `user` (customer-equivalent), `admin` (privileged operations).
+  - Public registration creates `user` only; administrators must be provisioned
+    through controlled paths (e.g., break-glass automation / internal admin API
+    not exposed here) — tests seed an admin via direct store injection to
+    validate RBAC without publishing bootstrap secrets.
+
+3.6 Least privilege enforcement
+  - Middleware `requireAuth` + `requireRole` guard routes (`src/middleware/auth.ts`).
+  - `user` cannot list arbitrary accounts or read others’ transactions; `admin`
+    may enumerate for support/investigation scenarios (documented risk: tighten
+    with field-level masking and purpose-based access in production).
+
+
+4. SECURITY CONTROLS (WITH REASONING)
+--------------------------------------------------------------------------------
+4.1 Input validation (Zod)
+  - Every route parses `req.body` / `req.query` / selected params through Zod
+    schemas; raw bodies are never trusted for business logic.
+  - Centralized `ZodError` handling suppresses verbose validation leakage in
+    production (`src/middleware/error-handler.ts`).
+
+4.2 Financial controls on transfers
+  - Balance sufficiency check before mutation.
+  - Configurable per-transfer ceiling (`TRANSFER_SINGLE_LIMIT`) and daily outbound
+    aggregate (`TRANSFER_DAILY_LIMIT`) computed from stored transaction history.
+  - Idempotency-Key header required; replay returns the original transaction
+    without double-spend (`src/routes/transfers.ts` + `store.idempotencyTransfers`).
+
+4.3 Fraud simulation
+  - Heuristic flags (non-blocking in this reference): large amount relative to
+    `FRAUD_LARGE_AMOUNT_THRESHOLD`, and velocity over rolling one-hour window vs
+    `FRAUD_VELOCITY_MAX_PER_HOUR` (`src/services/fraud.ts`). Flags attach to the
+    transaction record and audit metadata to demonstrate downstream AML workflow
+    integration points.
+
+4.4 HTTP security headers and CORS
+  - Helmet with CSP `default-src 'none'`, `frame-ancestors 'none'`, HSTS,
+    `X-Content-Type-Options`, frame denial.
+  - CORS allowlist from `ALLOWED_ORIGINS` (comma-separated), credentials enabled
+    to support cookie-based refresh in browser integrations.
+
+4.5 Rate limiting (defense against abuse / DoS)
+  - Global limiter on all routes.
+  - Login limiter (tighter, composite key).
+  - Transfer limiter keyed by authenticated user id (fallback IP if absent).
+
+4.6 Error handling discipline
+  - `AppError` returns stable client messages; unexpected errors log server-side
+    with Pino and respond with generic 500 JSON (no stack traces to clients).
+
+4.7 Logging and privacy
+  - Pino structured logs + audit channel (`src/services/audit.ts`).
+  - Redaction paths for Authorization, Cookie, password fields; `pino-http`
+    `customSuccessObject` / `customErrorObject` remove the serialized `res`
+    payload from automatic access logs (avoiding refresh `Set-Cookie` / JWT
+    leakage) while retaining `req`, `responseTime`, `statusCode`, and route
+    metadata needed for triage.
+  - Audit events avoid full PAN/account numbers; only internal UUIDs and masked
+    display strings are used in domain objects.
+
+
+5. THREAT MODEL — STRIDE
+--------------------------------------------------------------------------------
+5.1 Spoofing
+  - Threat: attacker poses as legitimate user or TPP.
+  - Mitigations: Argon2id password storage, JWT signature verification with
+    separate secrets, API key for transfer channel, login rate limits, account
+    lockout, generic authentication error messaging.
+
+5.2 Tampering
+  - Threat: attacker alters requests, replays transfers, or forges tokens.
+  - Mitigations: TLS (operational assumption), Zod validation, signed JWTs,
+    idempotency replay protection, refresh rotation + revocation metadata,
+    integrity of amounts via server-side recompute (not client trust).
+
+5.3 Repudiation
+  - Threat: actor denies initiating sensitive operations.
+  - Mitigations: append-style audit events with actor id (when known), event
+    type, coarse metadata (amounts, internal ids), timestamps; admin read API
+    for investigations (in production, forward to WORM/SIEM).
+
+5.4 Information disclosure
+  - Threat: secrets or PII leak via responses, logs, or verbose errors.
+  - Mitigations: production-safe Zod responses, redacted HTTP logs, masked
+    account numbers, no refresh token in JSON on login, serializer redaction for
+    cookies, controlled admin visibility (still not zero-knowledge — see risks).
+
+5.5 Denial of service
+  - Threat: volumetric traffic or credential stuffing exhausts resources.
+  - Mitigations: global and route-specific rate limits, JSON body size cap,
+    compression (bounded benefit), horizontal scaling + edge protection
+    recommended for real deployments.
+
+5.6 Privilege escalation
+  - Threat: standard user accesses admin-only capabilities or other users’ data.
+  - Mitigations: explicit `requireRole` matrices, account ownership checks on
+    transfers and reads, separate admin router namespace (`/admin`).
+
+
+6. RISK ANALYSIS — WHAT THIS REFERENCE DOES NOT SOLVE
+--------------------------------------------------------------------------------
+  - No durable database: restart clears users, balances, idempotency map, and
+    refresh revocation state — unacceptable for production financial workloads.
+  - No access-token denylist: stolen short-lived JWT remains valid until expiry;
+    high-security environments should pair with introspection/revocation or
+    session versioning.
+  - API key is a shared symmetric channel secret: acceptable as a stand-in for
+    mTLS/OAuth client credentials but must be rotated, partitioned per TPP, and
+    never embedded in public mobile apps.
+  - Fraud logic is illustrative only: no consortium scoring, device intelligence,
+    sanctions screening, or human investigation workflow.
+  - No HSM/KMS integration: secrets are environment variables only (appropriate
+    for OSS demo; production should use managed secret stores + key rotation).
+  - In-memory audit is not tamper-evident and is not an immutable ledger.
+  - PostgreSQL profile is not wired into application code paths in this release.
+
+
+7. DEVSECOPS PIPELINE EXPLANATION
+--------------------------------------------------------------------------------
+GitHub Actions workflow (`.github/workflows/ci.yml`) enforces:
+  1) `npm ci` reproducible install
+  2) ESLint (`npm run lint`)
+  3) Vitest unit/integration tests (`npm test`)
+  4) ESLint security plugin pass (`npm run security:sast`)
+  5) `npm audit --audit-level=high` dependency policy
+  6) Trivy filesystem scan (`HIGH,CRITICAL`, non-zero exit on findings)
+  7) TypeScript build (`npm run build`)
+  8) Docker image build tagged `fintrust-secure:${GITHUB_SHA}`
+  9) Trivy image scan on that tag with the same severity gate
+
+CI injects non-production JWT/API secrets via workflow `env` (ephemeral, public
+by design for pipeline execution only). Operators must never reuse CI literals
+in real environments.
+
+
+8. CONTAINER HARDENING
+--------------------------------------------------------------------------------
+  - Multi-stage Dockerfile builds TypeScript then prunes devDependencies.
+  - Final stage runs as non-root `fintrust` user.
+  - `HEALTHCHECK` probes `/health`.
+  - `.dockerignore` reduces build context (excludes `.env`, `node_modules`, tests).
+  - Compose adds `security_opt: no-new-privileges:true` and drops Linux
+    capabilities for the API container.
+
+
+9. PRODUCTION HARDENING RECOMMENDATIONS
+--------------------------------------------------------------------------------
+  - Terminate TLS at a managed ingress; enforce TLS 1.2+ and modern cipher suites.
+  - Replace in-memory store with PostgreSQL + migrations; store only Argon2id or
+    scrypt password hashes; store refresh tokens as hashed rows with rotation
+    metadata and partial indexes for revocation sweeps.
+  - Adopt OAuth 2.1 / FAPI-style flows for TPPs; prefer mTLS between gateway and
+    core services; remove static API keys from user devices.
+  - Centralize logs to SIEM with retention policies; implement log integrity
+    monitoring; separate security monitoring from application debug logs.
+  - Add continuous SAST (Semgrep/CodeQL), DAST, and dependency update automation
+    beyond npm audit + Trivy.
+  - Implement database row-level security aligned to `user_id` and strict column
+    encryption for regulated attributes.
+  - Conduct periodic penetration tests and red-team exercises focused on payment
+    initiation, token handling, and privilege boundaries.
+
+
+10. DOCUMENT GOVERNANCE
+--------------------------------------------------------------------------------
+Maintainers should update this report when material controls change (new
+endpoints, auth flows, persistence backends, or CI policy). SECURITY.md provides
+a concise public-facing summary; this file is the deep-dive companion suitable for
+internal security architecture review packets.
+
+================================================================================
+END OF REPORT
+================================================================================

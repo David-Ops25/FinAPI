@@ -1,6 +1,7 @@
 import { app } from "./app";
 import { env } from "./config/env";
+import { logger } from "./logger";
 
 app.listen(env.PORT, () => {
-  console.log(`FinTrust API listening on port ${env.PORT}`);
+  logger.info({ port: env.PORT }, "FinTrust Secure Platform API listening");
 });

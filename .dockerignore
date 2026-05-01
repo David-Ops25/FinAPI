@@ -1,0 +1,17 @@
+node_modules
+npm-debug.log
+.git
+.github
+.env
+.env.*
+!.env.example
+dist
+coverage
+*.log
+.vscode
+.idea
+test
+*.md
+!SECURITY.md
+FINTRUST_SECURITY_REPORT.txt
+agent-transcripts

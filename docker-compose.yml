@@ -1,7 +1,37 @@
+# Reference stack: API + optional PostgreSQL for future persistence layers.
+# The shipped Node service uses an in-memory domain store for portability; production
+# deployments should replace the store with PostgreSQL and hashed refresh persistence.
+
 services:
   api:
     build: .
+    image: fintrust-secure:latest
     ports:
       - "8080:8080"
     env_file:
       - .env
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  postgres:
+    image: postgres:16-alpine
+    profiles: ["database"]
+    environment:
+      POSTGRES_USER: fintrust
+      POSTGRES_PASSWORD: change-me-in-real-env
+      POSTGRES_DB: fintrust
+    ports:
+      - "5432:5432"
+    volumes:
+      - fintrust_pg:/var/lib/postgresql/data
+
+volumes:
+  fintrust_pg:

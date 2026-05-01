@@ -1,4 +1,4 @@
-export type Role = "customer" | "analyst" | "admin";
+export type Role = "user" | "admin";
 
 export interface User {
   id: string;
@@ -8,6 +8,9 @@ export interface User {
   failedLoginAttempts: number;
   lockedUntil: number | null;
   createdAt: string;
+  /** Encrypted TOTP seed (AES-256-GCM); null when MFA is off. */
+  mfaTotpSecretEnc: string | null;
+  mfaEnabled: boolean;
 }
 
 export interface Account {
@@ -25,6 +28,7 @@ export interface Transaction {
   amount: number;
   description: string;
   createdAt: string;
+  fraudFlags?: string[];
 }
 
 export interface RefreshTokenRecord {
@@ -39,7 +43,7 @@ export interface AuditLogEvent {
   eventType: string;
   actorUserId?: string;
   status: "success" | "failure";
-  metadata: Record<string, string | number | boolean | null>;
+  metadata: Record<string, string | number | boolean | null | string[]>;
   ip?: string;
   userAgent?: string;
   createdAt: string;

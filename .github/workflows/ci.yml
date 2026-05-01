@@ -18,24 +18,52 @@ jobs:
       LOCKOUT_MINUTES: 15
       TRANSFER_DAILY_LIMIT: 50000
       TRANSFER_SINGLE_LIMIT: 10000
-      ALLOWED_ORIGINS: https://localhost:3000
+      FRAUD_LARGE_AMOUNT_THRESHOLD: 5000
+      FRAUD_VELOCITY_MAX_PER_HOUR: 5
+      ALLOWED_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
       API_KEY_HEADER: x-api-key
       EXTERNAL_API_KEY: ci-api-key-1234567890
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-      - name: Install (cross-platform lockfile tolerant)
-        run: npm install --no-audit --no-fund
+
+      - name: Install dependencies
+        run: npm ci --no-fund
+
       - name: Lint
         run: npm run lint
+
       - name: Unit tests
         run: npm test
+
       - name: SAST (eslint security rules)
         run: npm run security:sast
-      - name: Dependency audit (fail high+)
-        run: npm run security:audit
-      - name: Build
+
+      - name: Dependency audit (fail on high+)
+        run: npm audit --audit-level=high
+
+      - name: Trivy filesystem scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+
+      - name: Build TypeScript
         run: npm run build
+
+      - name: Build Docker image
+        run: docker build -t fintrust-secure:${{ github.sha }} .
+
+      - name: Trivy image scan (fintrust-secure)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: image
+          image-ref: fintrust-secure:${{ github.sha }}
+          severity: HIGH,CRITICAL
+          exit-code: "1"

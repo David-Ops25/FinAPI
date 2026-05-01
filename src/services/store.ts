@@ -10,9 +10,11 @@ class InMemoryStore {
   idempotencyTransfers = new Map<string, string>();
   auditLogs: AuditLogEvent[] = [];
 
-  createUser(user: Omit<User, "id" | "createdAt" | "failedLoginAttempts" | "lockedUntil">): User {
+  createUser(user: Omit<User, "id" | "createdAt" | "failedLoginAttempts" | "lockedUntil" | "mfaTotpSecretEnc" | "mfaEnabled">): User {
     const created: User = {
       ...user,
+      mfaTotpSecretEnc: null,
+      mfaEnabled: false,
       id: uuidv4(),
       createdAt: new Date().toISOString(),
       failedLoginAttempts: 0,

@@ -1,15 +1,27 @@
-import { v4 as uuidv4 } from "uuid";
+import rateLimit from "express-rate-limit";
 import { Router } from "express";
+import { v4 as uuidv4 } from "uuid";
 import { z } from "zod";
 import { env } from "../config/env";
 import { requireApiKey } from "../middleware/api-key";
 import { requireAuth, requireRole } from "../middleware/auth";
 import { AppError } from "../middleware/error-handler";
+import { encodeJsonSafeTextFragment } from "../security/json-output-safety";
+import { evaluateTransferFraud } from "../services/fraud";
 import { logAudit } from "../services/audit";
 import { store } from "../services/store";
 
+const transferLimiter = rateLimit({
+  windowMs: env.RATE_LIMIT_WINDOW_MS,
+  limit: env.RATE_LIMIT_TRANSFER_MAX,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Transfer rate limit exceeded" },
+  keyGenerator: (req) => (req.auth?.userId ? `u:${req.auth.userId}` : `ip:${req.ip}`)
+});
+
 const router = Router();
-router.use(requireApiKey, requireAuth, requireRole(["customer", "admin"]));
+router.use(requireApiKey, requireAuth, requireRole(["user", "admin"]), transferLimiter);
 
 const transferSchema = z.object({
   fromAccountId: z.string().uuid(),
@@ -21,8 +33,8 @@ const transferSchema = z.object({
 
 router.post("/", (req, res) => {
   const idempotencyKey = req.header("idempotency-key");
-  if (!idempotencyKey) {
-    throw new AppError(400, "Missing Idempotency-Key header");
+  if (!idempotencyKey || idempotencyKey.length < 8 || idempotencyKey.length > 128) {
+    throw new AppError(400, "Missing or invalid Idempotency-Key header");
   }
   const existingTx = store.idempotencyTransfers.get(idempotencyKey);
   if (existingTx) {
@@ -32,12 +44,13 @@ router.post("/", (req, res) => {
   }
 
   const body = transferSchema.parse(req.body);
+  const safeNote = body.note !== undefined ? encodeJsonSafeTextFragment(body.note) : undefined;
   const from = store.accounts.get(body.fromAccountId);
   const to = store.accounts.get(body.toAccountId);
   if (!from || !to) {
     throw new AppError(404, "Account not found");
   }
-  if (req.auth?.role === "customer" && from.userId !== req.auth.userId) {
+  if (req.auth?.role === "user" && from.userId !== req.auth.userId) {
     throw new AppError(403, "Cannot transfer from this account");
   }
   if (from.balance < body.amount) {
@@ -51,6 +64,8 @@ router.post("/", (req, res) => {
     throw new AppError(400, "Daily transfer limit exceeded");
   }
 
+  const fraudFlags = evaluateTransferFraud({ fromAccountId: from.id, amount: body.amount });
+
   from.balance -= body.amount;
   to.balance += body.amount;
   store.accounts.set(from.id, from);
@@ -62,8 +77,9 @@ router.post("/", (req, res) => {
     accountId: from.id,
     type: "transfer",
     amount: body.amount,
-    description: body.note ?? "Fund transfer",
-    createdAt: new Date().toISOString()
+    description: safeNote ?? "Fund transfer",
+    createdAt: new Date().toISOString(),
+    fraudFlags: fraudFlags.length ? fraudFlags : undefined
   });
   store.idempotencyTransfers.set(idempotencyKey, txId);
 
@@ -75,11 +91,18 @@ router.post("/", (req, res) => {
       fromAccountId: from.id,
       toAccountId: to.id,
       amount: body.amount,
-      signatureValidated: body.transactionSignature.length >= 32
+      signatureValidated: body.transactionSignature.length >= 32,
+      fraudFlags: fraudFlags.length ? fraudFlags.join(",") : "none"
     }
   });
 
-  res.status(201).json({ transactionId: txId, fromBalance: from.balance, toBalance: to.balance });
+  res.status(201).json({
+    transactionId: txId,
+    fromBalance: from.balance,
+    toBalance: to.balance,
+    fraudReviewRecommended: fraudFlags.length > 0,
+    fraudFlags
+  });
 });
 
 export const transfersRouter = router;

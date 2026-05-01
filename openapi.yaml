@@ -1,6 +1,9 @@
 openapi: 3.0.3
 info:
-  title: FinTrust Banking API
+  title: FinTrust Secure Platform API
+  description: |
+    Hardened Open Banking–style reference API. Refresh tokens are issued as HttpOnly cookies
+    (`Path=/auth`) in addition to short-lived access tokens returned in JSON.
   version: 1.0.0
 servers:
   - url: https://api.fintrust.local
@@ -17,31 +20,68 @@ components:
 paths:
   /auth/register:
     post:
-      summary: Register user
+      summary: Register a standard user (role=user)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+                  minLength: 12
       responses:
         "201":
           description: Created
+        "400":
+          description: Validation or password policy failure
+        "409":
+          description: Email already registered
   /auth/login:
     post:
-      summary: Login and receive token pair
+      summary: Login; refresh token is set as HttpOnly cookie
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
       responses:
         "200":
-          description: Token pair issued
+          description: Access token issued; refresh cookie set
+        "401":
+          description: Invalid credentials
+        "423":
+          description: Account locked
   /auth/refresh:
     post:
-      summary: Rotate refresh token and issue new pair
+      summary: Rotate refresh token (HttpOnly cookie only) and issue new access token
       responses:
         "200":
           description: Tokens rotated
+        "401":
+          description: Invalid or revoked refresh
   /auth/logout:
     post:
-      summary: Revoke refresh token
+      summary: Revoke refresh session and clear cookie
       responses:
         "204":
           description: Logged out
   /accounts:
     get:
-      summary: List accounts
+      summary: List accounts visible to caller
       security:
         - bearerAuth: []
       responses:
@@ -49,7 +89,7 @@ paths:
           description: Accounts list
   /accounts/{id}:
     get:
-      summary: Get account by ID
+      summary: Get account by ID (UUID)
       security:
         - bearerAuth: []
       parameters:
@@ -58,12 +98,17 @@ paths:
           required: true
           schema:
             type: string
+            format: uuid
       responses:
         "200":
           description: Account
+        "403":
+          description: Forbidden for this account
+        "404":
+          description: Not found
   /transactions:
     get:
-      summary: List transactions with filters
+      summary: List transactions with optional filters
       security:
         - bearerAuth: []
       responses:
@@ -71,7 +116,7 @@ paths:
           description: Transactions list
   /transactions/{id}:
     get:
-      summary: Get transaction by ID
+      summary: Get transaction by ID (UUID)
       security:
         - bearerAuth: []
       parameters:
@@ -80,15 +125,91 @@ paths:
           required: true
           schema:
             type: string
+            format: uuid
       responses:
         "200":
           description: Transaction
+        "403":
+          description: Forbidden
+        "404":
+          description: Not found
   /transfers:
     post:
-      summary: Perform transfer with idempotency
+      summary: Execute a transfer with idempotency, limits, and fraud flags
       security:
         - bearerAuth: []
         - apiKeyAuth: []
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema:
+            type: string
+            minLength: 8
+            maxLength: 128
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [fromAccountId, toAccountId, amount, transactionSignature]
+              properties:
+                fromAccountId:
+                  type: string
+                  format: uuid
+                toAccountId:
+                  type: string
+                  format: uuid
+                amount:
+                  type: number
+                  minimum: 0
+                  exclusiveMinimum: true
+                note:
+                  type: string
+                  maxLength: 140
+                transactionSignature:
+                  type: string
+                  minLength: 32
+                  maxLength: 256
       responses:
+        "200":
+          description: Idempotent replay of prior successful request
         "201":
           description: Transfer executed
+        "400":
+          description: Business rule or validation failure
+        "401":
+          description: Missing/invalid API key or JWT
+        "403":
+          description: Ownership / RBAC violation
+        "404":
+          description: Account not found
+  /admin/audit-logs:
+    get:
+      summary: Paginated audit log export (admin only)
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+        - in: query
+          name: offset
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - in: query
+          name: eventType
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Audit page
+        "403":
+          description: Insufficient role
