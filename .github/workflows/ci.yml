@@ -60,6 +60,8 @@ jobs:
       - name: Build Docker image
         run: docker build -t fintrust-secure:${{ github.sha }} .
 
+      # Skip global npm tree bundled with official node:* images (CVE noise in e.g. picomatch under
+      # /usr/local/lib/node_modules/npm). Runtime uses only /app/node_modules + node binary.
       - name: Trivy image scan (fintrust-secure)
         uses: aquasecurity/trivy-action@v0.36.0
         with:
@@ -67,3 +69,4 @@ jobs:
           image-ref: fintrust-secure:${{ github.sha }}
           severity: HIGH,CRITICAL
           exit-code: "1"
+          skip-dirs: /usr/local/lib/node_modules
